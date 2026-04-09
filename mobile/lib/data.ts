@@ -633,3 +633,248 @@ export function subscribeToTournament(
     supabase.removeChannel(channel);
   };
 }
+
+// ============================================================
+// Bracket + Results Data Layer (Sprint 4)
+// ============================================================
+
+export type BracketMatch = {
+  id: string;
+  round_number: number;
+  slot_index: number;
+  phase: string;
+  best_of: number;
+  status: string;
+  tie_count: number;
+  house_match: boolean;
+  dual_advance: boolean;
+  winner_entry_id: string | null;
+  player_a: { entry_id: string; display_name: string; avatar_url: string | null } | null;
+  player_b: { entry_id: string; display_name: string; avatar_url: string | null } | null;
+  games: MatchGameRecord[];
+};
+
+/**
+ * Fetch the full bracket for a tournament (all matches with player names + games).
+ */
+export async function getTournamentBracket(
+  tournamentId: string
+): Promise<{ ok: true; matches: BracketMatch[]; rounds: number } | { ok: false; reason: string }> {
+  if (!hasSupabaseEnv()) {
+    return { ok: false, reason: "missing-env" };
+  }
+
+  // Fetch all matches
+  const { data: matches, error } = await supabase
+    .from("matches")
+    .select("*")
+    .eq("tournament_id", tournamentId)
+    .order("round_number", { ascending: true })
+    .order("slot_index", { ascending: true });
+
+  if (error) {
+    return { ok: false, reason: error.message };
+  }
+
+  if (!matches || matches.length === 0) {
+    return { ok: true, matches: [], rounds: 0 };
+  }
+
+  // Collect all entry IDs
+  const entryIds = new Set<string>();
+  for (const m of matches) {
+    if (m.player_a_entry_id) entryIds.add(m.player_a_entry_id);
+    if (m.player_b_entry_id) entryIds.add(m.player_b_entry_id);
+  }
+
+  // Fetch entries with profiles
+  const entryArray = Array.from(entryIds);
+  const { data: entries } = await supabase
+    .from("entries")
+    .select("id, profile_id")
+    .in("id", entryArray);
+
+  const profileIds = (entries ?? []).map((e) => e.profile_id);
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("id, display_name, avatar_url")
+    .in("id", profileIds);
+
+  // Build lookup maps
+  const entryToProfile = new Map<string, string>();
+  for (const e of entries ?? []) {
+    entryToProfile.set(e.id, e.profile_id);
+  }
+  const profileMap = new Map<string, { display_name: string; avatar_url: string | null }>();
+  for (const p of profiles ?? []) {
+    profileMap.set(p.id, { display_name: p.display_name, avatar_url: p.avatar_url });
+  }
+
+  // Fetch all match_games for this tournament
+  const matchIds = matches.map((m) => m.id);
+  const { data: allGames } = await supabase
+    .from("match_games")
+    .select("*")
+    .in("match_id", matchIds)
+    .order("game_number", { ascending: true });
+
+  const gamesByMatch = new Map<string, MatchGameRecord[]>();
+  for (const g of allGames ?? []) {
+    const list = gamesByMatch.get(g.match_id) ?? [];
+    list.push(g);
+    gamesByMatch.set(g.match_id, list);
+  }
+
+  // Build bracket matches
+  const bracketMatches: BracketMatch[] = matches.map((m) => {
+    const playerAProfile = m.player_a_entry_id
+      ? profileMap.get(entryToProfile.get(m.player_a_entry_id) ?? "")
+      : null;
+    const playerBProfile = m.player_b_entry_id
+      ? profileMap.get(entryToProfile.get(m.player_b_entry_id) ?? "")
+      : null;
+
+    return {
+      id: m.id,
+      round_number: m.round_number,
+      slot_index: m.slot_index,
+      phase: m.phase,
+      best_of: m.best_of,
+      status: m.status,
+      tie_count: m.tie_count,
+      house_match: m.house_match,
+      dual_advance: m.dual_advance,
+      winner_entry_id: m.winner_entry_id,
+      player_a: m.player_a_entry_id
+        ? {
+            entry_id: m.player_a_entry_id,
+            display_name: playerAProfile?.display_name ?? "Player",
+            avatar_url: playerAProfile?.avatar_url ?? null,
+          }
+        : null,
+      player_b: m.player_b_entry_id
+        ? {
+            entry_id: m.player_b_entry_id,
+            display_name: playerBProfile?.display_name ?? "Player",
+            avatar_url: playerBProfile?.avatar_url ?? null,
+          }
+        : m.house_match
+          ? { entry_id: "house", display_name: "The House", avatar_url: null }
+          : null,
+      games: gamesByMatch.get(m.id) ?? [],
+    };
+  });
+
+  const maxRound = Math.max(...matches.map((m) => m.round_number));
+
+  return { ok: true, matches: bracketMatches, rounds: maxRound };
+}
+
+export type TournamentResults = {
+  champion: { display_name: string; avatar_url: string | null } | null;
+  runnerUp: { display_name: string; avatar_url: string | null } | null;
+  semifinalists: { display_name: string; avatar_url: string | null }[];
+  totalEntrants: number;
+  totalRounds: number;
+  totalThrows: number;
+  totalTies: number;
+};
+
+/**
+ * Fetch tournament results: champion, runner-up, semifinalists, stats.
+ */
+export async function getTournamentResults(
+  tournamentId: string
+): Promise<{ ok: true; results: TournamentResults } | { ok: false; reason: string }> {
+  if (!hasSupabaseEnv()) {
+    return { ok: false, reason: "missing-env" };
+  }
+
+  // Get all entries to find winner
+  const { data: entries } = await supabase
+    .from("entries")
+    .select("id, profile_id, status")
+    .eq("tournament_id", tournamentId);
+
+  const totalEntrants = entries?.length ?? 0;
+
+  // Find champion (status = 'winner')
+  const championEntry = entries?.find((e) => e.status === "winner");
+
+  // Get all matches to find runner-up and semifinalists
+  const { data: matches } = await supabase
+    .from("matches")
+    .select("*")
+    .eq("tournament_id", tournamentId)
+    .order("round_number", { ascending: false });
+
+  const totalRounds = matches?.length
+    ? Math.max(...matches.map((m) => m.round_number))
+    : 0;
+
+  // Championship match: loser is runner-up
+  const championship = matches?.find((m) => m.phase === "championship" && m.status === "completed");
+  const runnerUpEntryId = championship?.loser_entry_id;
+
+  // Semifinal losers are semifinalists (3rd/4th place)
+  const semiFinals = matches?.filter(
+    (m) => m.phase === "semifinal" && m.status === "completed"
+  ) ?? [];
+  const semifinalistEntryIds = semiFinals
+    .map((m) => m.loser_entry_id)
+    .filter(Boolean) as string[];
+
+  // Collect all profile IDs we need
+  const entryIds = [
+    championEntry?.id,
+    runnerUpEntryId,
+    ...semifinalistEntryIds,
+  ].filter(Boolean) as string[];
+
+  const relevantEntries = entries?.filter((e) => entryIds.includes(e.id)) ?? [];
+  const profileIds = relevantEntries.map((e) => e.profile_id);
+
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("id, display_name, avatar_url")
+    .in("id", profileIds);
+
+  const profileMap = new Map<string, { display_name: string; avatar_url: string | null }>();
+  for (const p of profiles ?? []) {
+    profileMap.set(p.id, { display_name: p.display_name, avatar_url: p.avatar_url });
+  }
+
+  const entryToProfile = new Map<string, string>();
+  for (const e of entries ?? []) {
+    entryToProfile.set(e.id, e.profile_id);
+  }
+
+  const getProfile = (entryId: string | undefined) => {
+    if (!entryId) return null;
+    const profileId = entryToProfile.get(entryId);
+    return profileId ? profileMap.get(profileId) ?? null : null;
+  };
+
+  // Count throws and ties
+  const { count: throwCount } = await supabase
+    .from("throws")
+    .select("id", { count: "exact", head: true })
+    .in("match_id", (matches ?? []).map((m) => m.id));
+
+  const totalTies = (matches ?? []).reduce((sum, m) => sum + m.tie_count, 0);
+
+  return {
+    ok: true,
+    results: {
+      champion: getProfile(championEntry?.id),
+      runnerUp: getProfile(runnerUpEntryId ?? undefined),
+      semifinalists: semifinalistEntryIds.map(
+        (eid) => getProfile(eid) ?? { display_name: "Unknown", avatar_url: null }
+      ),
+      totalEntrants,
+      totalRounds,
+      totalThrows: throwCount ?? 0,
+      totalTies,
+    },
+  };
+}
