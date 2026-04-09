@@ -9,6 +9,7 @@ import "react-native-reanimated";
 import "../global.css";
 import { supabase } from "@/lib/supabase";
 import { ensureProfile } from "@/lib/data";
+import { registerForPushNotifications } from "@/lib/notifications";
 
 export { ErrorBoundary } from "expo-router";
 
@@ -61,6 +62,8 @@ async function handleDeepLink(url: string) {
       id: data.user.id,
       email: data.user.email,
     });
+    // Register for push notifications
+    registerForPushNotifications(data.user.id).catch(() => {});
   }
 }
 
@@ -99,6 +102,15 @@ export default function RootLayout() {
     });
 
     return () => subscription.remove();
+  }, []);
+
+  // Register push token for existing sessions on app start
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        registerForPushNotifications(data.user.id).catch(() => {});
+      }
+    });
   }, []);
 
   if (!loaded) return null;

@@ -4,11 +4,18 @@ import Constants from "expo-constants";
 
 const extra = Constants.expoConfig?.extra ?? {};
 
-const supabaseUrl: string = extra.supabaseUrl ?? "";
-const supabaseAnonKey: string = extra.supabaseAnonKey ?? "";
+// Prefer EXPO_PUBLIC_ env vars (EAS Build), fall back to app.json extra (Expo Go)
+const supabaseUrl: string =
+  process.env.EXPO_PUBLIC_SUPABASE_URL ?? extra.supabaseUrl ?? "";
+const supabaseAnonKey: string =
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? extra.supabaseAnonKey ?? "";
 
 export function hasSupabaseEnv() {
   return Boolean(supabaseUrl && supabaseAnonKey);
+}
+
+export function getSupabaseUrl() {
+  return supabaseUrl;
 }
 
 const ExpoSecureStoreAdapter = {

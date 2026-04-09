@@ -1,5 +1,4 @@
-import { supabase, hasSupabaseEnv } from "./supabase";
-import Constants from "expo-constants";
+import { supabase, hasSupabaseEnv, getSupabaseUrl } from "./supabase";
 import type { Move } from "./types";
 
 export type ProfileRecord = {
@@ -539,8 +538,7 @@ export async function submitMove(
   matchId: string,
   move: Move
 ): Promise<{ ok: true; gameNumber: number; resolved: boolean } | { ok: false; reason: string }> {
-  const extra = Constants.expoConfig?.extra ?? {};
-  const supabaseUrl: string = extra.supabaseUrl ?? "";
+  const supabaseUrl = getSupabaseUrl();
 
   const {
     data: { session },
