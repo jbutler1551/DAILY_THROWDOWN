@@ -290,3 +290,104 @@ export async function getTodayEntrantCount(): Promise<{
     tournamentId: tournament.id,
   };
 }
+
+/**
+ * Get today's tournament with full info for the state machine.
+ */
+export async function getTodayTournamentStatus() {
+  if (!hasSupabaseEnv()) {
+    return { ok: false as const, reason: "missing-env" as const };
+  }
+
+  const tournamentDate = new Date().toISOString().slice(0, 10);
+
+  const { data: tournament, error } = await supabase
+    .from("tournaments")
+    .select("id, tournament_date, scheduled_at, status")
+    .eq("tournament_date", tournamentDate)
+    .maybeSingle();
+
+  if (error) {
+    return { ok: false as const, reason: error.message };
+  }
+
+  if (!tournament) {
+    return { ok: true as const, tournament: null, entrantCount: 0 };
+  }
+
+  // Get entrant count
+  const { count } = await supabase
+    .from("entries")
+    .select("id", { count: "exact", head: true })
+    .eq("tournament_id", tournament.id);
+
+  return {
+    ok: true as const,
+    tournament,
+    entrantCount: count ?? 0,
+  };
+}
+
+/**
+ * Get the current user's entry for a specific tournament.
+ */
+export async function getMyEntry(tournamentId: string, profileId: string) {
+  if (!hasSupabaseEnv()) {
+    return { ok: false as const, reason: "missing-env" as const };
+  }
+
+  const { data, error } = await supabase
+    .from("entries")
+    .select("id, tournament_id, profile_id, streak_at_entry, bye_round, status")
+    .eq("tournament_id", tournamentId)
+    .eq("profile_id", profileId)
+    .maybeSingle();
+
+  if (error) {
+    return { ok: false as const, reason: error.message };
+  }
+
+  return { ok: true as const, entry: data };
+}
+
+/**
+ * Subscribe to real-time changes on the entries table for a tournament.
+ * Returns an unsubscribe function.
+ */
+export function subscribeToEntries(
+  tournamentId: string,
+  onInsert: (count: number) => void
+) {
+  let currentCount = 0;
+
+  // Initial count fetch
+  supabase
+    .from("entries")
+    .select("id", { count: "exact", head: true })
+    .eq("tournament_id", tournamentId)
+    .then(({ count }) => {
+      currentCount = count ?? 0;
+      onInsert(currentCount);
+    });
+
+  const channel = supabase
+    .channel(`entries:${tournamentId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "entries",
+        filter: `tournament_id=eq.${tournamentId}`,
+      },
+      () => {
+        currentCount++;
+        onInsert(currentCount);
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}

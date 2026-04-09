@@ -11,8 +11,15 @@ import {
 } from "@/components/ui";
 import { getHostLine } from "@/lib/host";
 import { supabase } from "@/lib/supabase";
-import { getMyProfile, getTodayEntrantCount } from "@/lib/data";
+import { getMyProfile, getTodayTournamentStatus } from "@/lib/data";
 import { getStreakTier } from "@/lib/engine";
+import {
+  getTournamentState,
+  getMsUntilStart,
+  formatCountdown,
+  type TournamentState,
+  type TournamentInfo,
+} from "@/lib/tournament-state";
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -20,11 +27,21 @@ export default function HomeScreen() {
   const [entrantCount, setEntrantCount] = useState(0);
   const [currentStreak, setCurrentStreak] = useState<number | null>(null);
   const [isSignedIn, setIsSignedIn] = useState(false);
+  const [tournament, setTournament] = useState<TournamentInfo | null>(null);
+  const [tournamentState, setTournamentState] =
+    useState<TournamentState>("no-tournament");
+  const [countdown, setCountdown] = useState("--:--:--");
 
   useEffect(() => {
-    // Fetch entrant count (no auth required)
-    getTodayEntrantCount().then((res) => {
-      if (res.ok) setEntrantCount(res.count);
+    // Fetch tournament status
+    getTodayTournamentStatus().then((res) => {
+      if (res.ok) {
+        setTournament(res.tournament ?? null);
+        setEntrantCount(res.entrantCount ?? 0);
+        if (res.tournament) {
+          setTournamentState(getTournamentState(res.tournament));
+        }
+      }
     });
 
     // Fetch user streak if signed in
@@ -54,6 +71,23 @@ export default function HomeScreen() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Countdown timer
+  useEffect(() => {
+    if (!tournament || tournamentState === "completed" || tournamentState === "live") {
+      return;
+    }
+
+    function tick() {
+      const ms = getMsUntilStart(tournament);
+      setCountdown(formatCountdown(ms));
+      setTournamentState(getTournamentState(tournament));
+    }
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [tournament, tournamentState]);
+
   const streakDisplay =
     currentStreak !== null ? String(currentStreak) : "--";
 
@@ -65,11 +99,29 @@ export default function HomeScreen() {
     return "No bye yet";
   })();
 
+  const statusPill = (() => {
+    switch (tournamentState) {
+      case "live":
+        return <Pill color="green">Live Now</Pill>;
+      case "starting-soon":
+        return <Pill color="cyan">Starting Soon</Pill>;
+      case "completed":
+        return <Pill color="default">Completed</Pill>;
+      default:
+        return <Pill>Daily Throwdown</Pill>;
+    }
+  })();
+
+  const showCountdown =
+    tournament &&
+    tournamentState !== "live" &&
+    tournamentState !== "completed";
+
   return (
     <ScreenShell>
       {/* Hero */}
       <View className="rounded-3xl border border-fuchsia-400/20 bg-black/20 p-5">
-        <Pill>Daily Throwdown</Pill>
+        {statusPill}
 
         <Text className="mt-4 text-3xl font-black tracking-tight text-white">
           Rock. Paper. Scissors.{" "}
@@ -82,15 +134,26 @@ export default function HomeScreen() {
           let anyone lose quietly.
         </Text>
 
-        {/* Tournament info */}
-        <View className="mt-4 items-end rounded-2xl border border-white/10 bg-white/5 p-4">
-          <Text className="text-[10px] uppercase tracking-widest text-white/40">
-            Tournament Start
-          </Text>
-          <Text className="mt-1 text-2xl font-black text-fuchsia-200">
-            2:00 PM CT
-          </Text>
-        </View>
+        {/* Tournament countdown or time */}
+        {showCountdown ? (
+          <View className="mt-4 items-end rounded-2xl border border-white/10 bg-white/5 p-4">
+            <Text className="text-[10px] uppercase tracking-widest text-white/40">
+              Starts In
+            </Text>
+            <Text className="mt-1 text-2xl font-black tracking-wider text-fuchsia-200">
+              {countdown}
+            </Text>
+          </View>
+        ) : (
+          <View className="mt-4 items-end rounded-2xl border border-white/10 bg-white/5 p-4">
+            <Text className="text-[10px] uppercase tracking-widest text-white/40">
+              Tournament Start
+            </Text>
+            <Text className="mt-1 text-2xl font-black text-fuchsia-200">
+              2:00 PM CT
+            </Text>
+          </View>
+        )}
 
         {/* Stats row */}
         <View className="mt-4 flex-row flex-wrap gap-3">
@@ -124,14 +187,20 @@ export default function HomeScreen() {
 
         {/* CTAs */}
         <View className="mt-4 flex-row gap-3">
-          <Button onPress={() => router.push("/lobby")}>
-            Join Tournament
-          </Button>
+          {tournamentState === "live" ? (
+            <Button onPress={() => router.push("/broadcast")}>
+              Watch Live
+            </Button>
+          ) : (
+            <Button onPress={() => router.push("/lobby")}>
+              Join Tournament
+            </Button>
+          )}
           <Button
             variant="secondary"
             onPress={() => router.push("/broadcast")}
           >
-            Watch
+            {tournamentState === "live" ? "Bracket" : "Watch"}
           </Button>
         </View>
       </View>
