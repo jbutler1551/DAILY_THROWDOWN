@@ -4,8 +4,8 @@ import { useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { ScreenShell, Card, Pill, StatBox, Button } from "@/components/ui";
 import { supabase } from "@/lib/supabase";
-import { getMyProfile, getPlayerStats } from "@/lib/data";
-import type { MyProfile, PlayerStats } from "@/lib/data";
+import { getMyProfile, getPlayerStats, getMatchHistory } from "@/lib/data";
+import type { MyProfile, PlayerStats, MatchHistoryItem } from "@/lib/data";
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -13,15 +13,18 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<MyProfile | null>(null);
   const [stats, setStats] = useState<PlayerStats | null>(null);
+  const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
 
   const fetchProfileData = useCallback(async (userId: string) => {
-    const [profileResult, statsResult] = await Promise.all([
+    const [profileResult, statsResult, historyResult] = await Promise.all([
       getMyProfile(userId),
       getPlayerStats(userId),
+      getMatchHistory(userId),
     ]);
 
     if (profileResult.ok) setProfile(profileResult.profile);
     if (statsResult.ok) setStats(statsResult.stats);
+    if (historyResult.ok) setMatchHistory(historyResult.matches);
   }, []);
 
   useEffect(() => {
@@ -205,6 +208,53 @@ export default function ProfileScreen() {
         </View>
       </Card>
 
+      {/* Match history */}
+      {matchHistory.length > 0 && (
+        <Card title="Recent Matches" subtitle={`Last ${matchHistory.length}`}>
+          <View className="gap-2">
+            {matchHistory.map((m) => (
+              <View
+                key={m.matchId}
+                className={`flex-row items-center justify-between rounded-2xl border p-3 ${
+                  m.result === "win"
+                    ? "border-emerald-400/20 bg-emerald-400/5"
+                    : m.result === "loss"
+                      ? "border-red-400/20 bg-red-400/5"
+                      : "border-amber-400/20 bg-amber-400/5"
+                }`}
+              >
+                <View className="flex-1">
+                  <Text className="text-sm font-bold text-white">
+                    vs {m.opponentName}
+                  </Text>
+                  <Text className="text-[10px] text-white/40">
+                    {m.date} — R{m.round} {m.phase}
+                  </Text>
+                </View>
+                <View className="items-end">
+                  <Pill
+                    color={
+                      m.result === "win"
+                        ? "green"
+                        : m.result === "loss"
+                          ? "red"
+                          : "amber"
+                    }
+                  >
+                    {m.result.toUpperCase()}
+                  </Pill>
+                  {m.myMove && m.oppMove && (
+                    <Text className="mt-1 text-[10px] capitalize text-white/40">
+                      {m.myMove} vs {m.oppMove}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            ))}
+          </View>
+        </Card>
+      )}
+
       {/* Sign out */}
       <View className="items-center">
         <Button
@@ -214,6 +264,7 @@ export default function ProfileScreen() {
             setUser(null);
             setProfile(null);
             setStats(null);
+            setMatchHistory([]);
           }}
         >
           Sign Out

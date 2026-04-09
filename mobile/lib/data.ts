@@ -878,3 +878,168 @@ export async function getTournamentResults(
     },
   };
 }
+
+// ============================================================
+// Match History (Sprint 5)
+// ============================================================
+
+export type MatchHistoryItem = {
+  matchId: string;
+  date: string;
+  opponentName: string;
+  result: "win" | "loss" | "tie";
+  myMove: string | null;
+  oppMove: string | null;
+  phase: string;
+  round: number;
+};
+
+/**
+ * Fetch last 20 matches for a player across all tournaments.
+ */
+export async function getMatchHistory(
+  profileId: string
+): Promise<{ ok: true; matches: MatchHistoryItem[] } | { ok: false; reason: string }> {
+  if (!hasSupabaseEnv()) {
+    return { ok: false, reason: "missing-env" };
+  }
+
+  // Get all entries for this profile
+  const { data: entries } = await supabase
+    .from("entries")
+    .select("id, tournament_id")
+    .eq("profile_id", profileId);
+
+  if (!entries || entries.length === 0) {
+    return { ok: true, matches: [] };
+  }
+
+  const entryIds = entries.map((e) => e.id);
+  const entryIdSet = new Set(entryIds);
+  const entryToTournament = new Map<string, string>();
+  for (const e of entries) {
+    entryToTournament.set(e.id, e.tournament_id);
+  }
+
+  // Fetch matches involving this player's entries, most recent first
+  const { data: matches, error } = await supabase
+    .from("matches")
+    .select("*")
+    .or(entryIds.map((id) => `player_a_entry_id.eq.${id}`).join(",") + "," +
+        entryIds.map((id) => `player_b_entry_id.eq.${id}`).join(","))
+    .eq("status", "completed")
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    return { ok: false, reason: error.message };
+  }
+
+  if (!matches || matches.length === 0) {
+    return { ok: true, matches: [] };
+  }
+
+  // Collect opponent entry IDs
+  const opponentEntryIds = new Set<string>();
+  for (const m of matches) {
+    const myEntryId = entryIdSet.has(m.player_a_entry_id)
+      ? m.player_a_entry_id
+      : m.player_b_entry_id;
+    const oppEntryId = myEntryId === m.player_a_entry_id
+      ? m.player_b_entry_id
+      : m.player_a_entry_id;
+    if (oppEntryId) opponentEntryIds.add(oppEntryId);
+  }
+
+  // Fetch opponent profiles
+  const oppEntryArray = Array.from(opponentEntryIds);
+  const { data: oppEntries } = await supabase
+    .from("entries")
+    .select("id, profile_id")
+    .in("id", oppEntryArray);
+
+  const oppProfileIds = (oppEntries ?? []).map((e) => e.profile_id);
+  const { data: oppProfiles } = await supabase
+    .from("profiles")
+    .select("id, display_name")
+    .in("id", oppProfileIds);
+
+  const entryToProfileId = new Map<string, string>();
+  for (const e of oppEntries ?? []) {
+    entryToProfileId.set(e.id, e.profile_id);
+  }
+  const profileNames = new Map<string, string>();
+  for (const p of oppProfiles ?? []) {
+    profileNames.set(p.id, p.display_name);
+  }
+
+  // Fetch last game for each match
+  const matchIds = matches.map((m) => m.id);
+  const { data: allGames } = await supabase
+    .from("match_games")
+    .select("*")
+    .in("match_id", matchIds)
+    .order("game_number", { ascending: false });
+
+  const lastGameByMatch = new Map<string, MatchGameRecord>();
+  for (const g of allGames ?? []) {
+    if (!lastGameByMatch.has(g.match_id)) {
+      lastGameByMatch.set(g.match_id, g);
+    }
+  }
+
+  // Fetch tournament dates
+  const tournamentIds = Array.from(new Set(matches.map((m) => m.tournament_id)));
+  const { data: tournaments } = await supabase
+    .from("tournaments")
+    .select("id, tournament_date")
+    .in("id", tournamentIds);
+
+  const tournamentDates = new Map<string, string>();
+  for (const t of tournaments ?? []) {
+    tournamentDates.set(t.id, t.tournament_date);
+  }
+
+  // Build history items
+  const history: MatchHistoryItem[] = matches.map((m) => {
+    const myEntryId = entryIdSet.has(m.player_a_entry_id)
+      ? m.player_a_entry_id
+      : m.player_b_entry_id;
+    const iAmA = myEntryId === m.player_a_entry_id;
+    const oppEntryId = iAmA ? m.player_b_entry_id : m.player_a_entry_id;
+
+    let opponentName = "The House";
+    if (oppEntryId && !m.house_match) {
+      const oppProfileId = entryToProfileId.get(oppEntryId);
+      opponentName = (oppProfileId ? profileNames.get(oppProfileId) : null) ?? "Unknown";
+    }
+
+    let result: "win" | "loss" | "tie" = "loss";
+    if (m.dual_advance) {
+      result = "tie";
+    } else if (m.winner_entry_id === myEntryId) {
+      result = "win";
+    }
+
+    const lastGame = lastGameByMatch.get(m.id);
+    const myMove = lastGame
+      ? iAmA ? lastGame.player_a_move : lastGame.player_b_move
+      : null;
+    const oppMove = lastGame
+      ? iAmA ? lastGame.player_b_move : lastGame.player_a_move
+      : null;
+
+    return {
+      matchId: m.id,
+      date: tournamentDates.get(m.tournament_id) ?? "",
+      opponentName,
+      result,
+      myMove,
+      oppMove,
+      phase: m.phase,
+      round: m.round_number,
+    };
+  });
+
+  return { ok: true, matches: history };
+}
